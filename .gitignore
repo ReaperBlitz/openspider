@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+
+# IDE
+.vscode/
+.idea/
+
+# Runtime cache
+.cache/
+
+# Optional local crawler dumps
+dumps/
+exports/
+
+# Keep crawler state tracked
+# DO NOT ignore data/state.json
