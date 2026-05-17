@@ -2,30 +2,51 @@ name: OpenSpider
 
 on:
   schedule:
-    # Every 30 minutes
-    - cron: "*/30 * * * *"
+    # Every 6 hours
+    - cron: "0 */6 * * *"
 
   # Manual trigger
   workflow_dispatch:
 
 jobs:
   crawl:
+    name: OpenSpider Crawl
     runs-on: ubuntu-latest
 
+    timeout-minutes: 20
+
+    concurrency:
+      group: openspider-crawl
+      cancel-in-progress: false
+
     steps:
+      # ================= REPOSITORY =================
+
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      # ================= NODE =================
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+
+      # ================= DEPENDENCIES =================
 
       - name: Install Dependencies
         run: npm install
+
+      # ================= RUN CRAWLER =================
 
       - name: Run OpenSpider
         run: node crawler.js
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      # ================= STATUS =================
+
+      - name: Workflow Finished
+        run: echo "OpenSpider crawl completed."
