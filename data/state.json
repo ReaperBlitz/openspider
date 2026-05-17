@@ -1,0 +1,19 @@
+{
+  "visited": [],
+  "queue": [
+    {
+      "url": "https://news.ycombinator.com",
+      "priority": 1,
+      "depth": 0
+    },
+    {
+      "url": "https://reddit.com/r/scams",
+      "priority": 1,
+      "depth": 0
+    }
+  ],
+  "stats": {
+    "totalCrawled": 0,
+    "totalAlerts": 0
+  }
+}
