@@ -14,11 +14,20 @@ const CONFIG = {
   MODEL:
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 
-  MAX_PAGES: 100,
+  MAX_PAGES: 250,
 
-  REQUEST_DELAY: 1500,
+  REQUEST_DELAY: 1200,
 
   MAX_DEPTH: 2,
+
+  MAX_QUEUE_SIZE: 1000,
+
+  MAX_VISITED_SIZE: 5000,
+
+  MAX_RUNTIME_MS:
+    1000 * 60 * 25,
+
+  AI_MIN_RISK: 0.2,
 
   SUSPICIOUS_THRESHOLD: 0.3,
 
@@ -27,27 +36,53 @@ const CONFIG = {
 
 // ================= STATE =================
 
-const STATE_PATH = "./data/state.json";
+const STATE_PATH =
+  "./data/state.json";
 
 let state = {
   visited: [],
   queue: [],
   stats: {
     totalCrawled: 0,
-    totalAlerts: 0
+    totalAlerts: 0,
+    totalAIRequests: 0,
+    startedAt: new Date()
+      .toISOString()
   }
 };
 
-if (fs.existsSync(STATE_PATH)) {
+if (
+  fs.existsSync(STATE_PATH)
+) {
 
-  state = JSON.parse(
-    fs.readFileSync(STATE_PATH, "utf8")
-  );
+  try {
+
+    state = JSON.parse(
+      fs.readFileSync(
+        STATE_PATH,
+        "utf8"
+      )
+    );
+
+  } catch {
+
+    console.log(
+      "State corrupted, resetting..."
+    );
+  }
 }
 
-const visited = new Set(state.visited);
+const visited =
+  new Set(state.visited);
 
 const queue = state.queue;
+
+const queuedUrls =
+  new Set(
+    queue.map(q => q.url)
+  );
+
+const domainCounts = {};
 
 // ================= TRUSTED DOMAINS =================
 
@@ -55,10 +90,13 @@ const TRUSTED_DOMAINS = [
   "wikipedia.org",
   "developer.mozilla.org",
   "github.com",
-  "stackoverflow.com"
+  "stackoverflow.com",
+  "mozilla.org",
+  "microsoft.com",
+  "google.com"
 ];
 
-// ================= KEYWORDS =================
+// ================= SUSPICIOUS KEYWORDS =================
 
 const suspiciousKeywords = [
   "login",
@@ -70,32 +108,51 @@ const suspiciousKeywords = [
   "account",
   "support",
   "password",
-  "signin"
+  "signin",
+  "gift",
+  "free",
+  "claim",
+  "reward",
+  "unlock",
+  "bonus",
+  "authenticate",
+  "recovery"
 ];
 
 // ================= UTIL =================
 
 function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+
+  return new Promise(
+    r => setTimeout(r, ms)
+  );
 }
 
 function saveState() {
 
-  const limitedVisited =
-    [...visited].slice(-5000);
-
-  const limitedQueue =
-    queue.slice(0, 1000);
-
   const data = {
-    visited: limitedVisited,
-    queue: limitedQueue,
+    visited:
+      [...visited]
+      .slice(
+        -CONFIG.MAX_VISITED_SIZE
+      ),
+
+    queue:
+      queue.slice(
+        0,
+        CONFIG.MAX_QUEUE_SIZE
+      ),
+
     stats: state.stats
   };
 
   fs.writeFileSync(
     STATE_PATH,
-    JSON.stringify(data, null, 2)
+    JSON.stringify(
+      data,
+      null,
+      2
+    )
   );
 }
 
@@ -131,10 +188,11 @@ function getDomain(url) {
 
 function isTrusted(url) {
 
-  const domain = getDomain(url);
+  const domain =
+    getDomain(url);
 
-  return TRUSTED_DOMAINS.some(d =>
-    domain.includes(d)
+  return TRUSTED_DOMAINS.some(
+    d => domain.includes(d)
   );
 }
 
@@ -142,7 +200,8 @@ function shouldSkip(url) {
 
   if (!url) return true;
 
-  const lower = url.toLowerCase();
+  const lower =
+    url.toLowerCase();
 
   const blocked = [
     ".png",
@@ -154,32 +213,50 @@ function shouldSkip(url) {
     ".zip",
     ".rar",
     ".mp4",
-    ".mp3"
+    ".mp3",
+    ".exe",
+    ".dmg",
+    ".iso"
   ];
 
   if (
-    lower.startsWith("mailto:") ||
-    lower.startsWith("javascript:") ||
+    lower.startsWith(
+      "mailto:"
+    ) ||
+    lower.startsWith(
+      "javascript:"
+    ) ||
     lower.startsWith("#") ||
     lower.startsWith("tel:")
   ) {
+
     return true;
   }
 
-  return blocked.some(ext =>
-    lower.endsWith(ext)
+  return blocked.some(
+    ext =>
+      lower.endsWith(ext)
   );
 }
 
-function calculatePriority(url) {
+function calculatePriority(
+  url
+) {
 
-  const lower = url.toLowerCase();
+  const lower =
+    url.toLowerCase();
 
   let score = 0;
 
-  for (const keyword of suspiciousKeywords) {
+  for (
+    const keyword of
+    suspiciousKeywords
+  ) {
 
-    if (lower.includes(keyword)) {
+    if (
+      lower.includes(keyword)
+    ) {
+
       score += 1;
     }
   }
@@ -187,30 +264,88 @@ function calculatePriority(url) {
   return score;
 }
 
-function enqueue(url, depth = 0) {
+function enqueue(
+  url,
+  depth = 0
+) {
 
   const normalized =
     normalizeUrl(url);
 
   if (!normalized) return;
 
-  if (visited.has(normalized)) return;
+  if (
+    visited.has(normalized)
+  ) return;
+
+  if (
+    queuedUrls.has(normalized)
+  ) return;
+
+  if (
+    queue.length >=
+    CONFIG.MAX_QUEUE_SIZE
+  ) return;
+
+  const domain =
+    getDomain(normalized);
+
+  domainCounts[domain] =
+    (domainCounts[domain] || 0) + 1;
+
+  // prevent flooding
+  if (
+    domainCounts[domain] > 100
+  ) return;
 
   queue.push({
     url: normalized,
     priority:
-      calculatePriority(normalized),
+      calculatePriority(
+        normalized
+      ),
     depth
   });
 
-  queue.sort((a, b) =>
-    b.priority - a.priority
+  queuedUrls.add(
+    normalized
+  );
+
+  queue.sort(
+    (a, b) =>
+      b.priority -
+      a.priority
+  );
+}
+
+function shouldUseAI(
+  localRisk
+) {
+
+  return (
+    localRisk >=
+    CONFIG.AI_MIN_RISK
+  );
+}
+
+function isValidHtml(
+  contentType
+) {
+
+  if (!contentType)
+    return false;
+
+  return contentType.includes(
+    "text/html"
   );
 }
 
 // ================= LOCAL ANALYSIS =================
 
-function localAnalyze(url, text) {
+function localAnalyze(
+  url,
+  text
+) {
 
   const lowerUrl =
     url.toLowerCase();
@@ -222,9 +357,16 @@ function localAnalyze(url, text) {
 
   const reasons = [];
 
-  for (const keyword of suspiciousKeywords) {
+  for (
+    const keyword of
+    suspiciousKeywords
+  ) {
 
-    if (lowerUrl.includes(keyword)) {
+    if (
+      lowerUrl.includes(
+        keyword
+      )
+    ) {
 
       risk += 0.1;
 
@@ -235,8 +377,12 @@ function localAnalyze(url, text) {
   }
 
   if (
-    lowerText.includes("password") &&
-    lowerText.includes("email")
+    lowerText.includes(
+      "password"
+    ) &&
+    lowerText.includes(
+      "email"
+    )
   ) {
 
     risk += 0.25;
@@ -247,7 +393,9 @@ function localAnalyze(url, text) {
   }
 
   if (
-    lowerText.includes("verify account")
+    lowerText.includes(
+      "verify account"
+    )
   ) {
 
     risk += 0.2;
@@ -257,40 +405,81 @@ function localAnalyze(url, text) {
     );
   }
 
+  if (
+    lowerText.includes(
+      "wallet connect"
+    )
+  ) {
+
+    risk += 0.25;
+
+    reasons.push(
+      "crypto wallet interaction"
+    );
+  }
+
+  if (
+    lowerText.includes(
+      "seed phrase"
+    )
+  ) {
+
+    risk += 0.5;
+
+    reasons.push(
+      "seed phrase mention"
+    );
+  }
+
   return {
-    risk: Math.min(risk, 1),
+    risk:
+      Math.min(risk, 1),
+
     reasons
   };
 }
 
-// ================= AI =================
+// ================= AI ANALYSIS =================
 
-async function analyzeWithAI(url, text) {
+async function analyzeWithAI(
+  url,
+  text
+) {
 
   try {
+
+    state.stats.totalAIRequests++;
 
     const response =
       await axios.post(
         "https://openrouter.ai/api/v1/chat/completions",
         {
-          model: CONFIG.MODEL,
+          model:
+            CONFIG.MODEL,
 
           messages: [
             {
-              role: "system",
+              role:
+                "system",
+
               content:
+                "You are a cybersecurity threat analysis AI. " +
                 "Return ONLY valid JSON. " +
                 'Format: {"risk":0-1,"label":"benign|suspicious|phishing|malware","reasons":["reason"]}'
             },
+
             {
-              role: "user",
+              role:
+                "user",
+
               content:
-                `Analyze this website.\n\n` +
+                `Analyze this webpage.\n\n` +
                 `URL:\n${url}\n\n` +
-                `CONTENT:\n${text.slice(0, 2500)}`
+                `CONTENT:\n${text.slice(0, 3000)}`
             }
           ]
         },
+
         {
           headers: {
             Authorization:
@@ -298,7 +487,9 @@ async function analyzeWithAI(url, text) {
 
             "Content-Type":
               "application/json"
-          }
+          },
+
+          timeout: 30000
         }
       );
 
@@ -310,13 +501,16 @@ async function analyzeWithAI(url, text) {
 
     try {
 
-      return JSON.parse(output);
+      return JSON.parse(
+        output
+      );
 
     } catch {
 
       return {
         risk: 0,
-        label: "parse_error",
+        label:
+          "parse_error",
         reasons: [
           "invalid ai json"
         ]
@@ -328,14 +522,18 @@ async function analyzeWithAI(url, text) {
     return {
       risk: 0,
       label: "ai_error",
-      reasons: [err.message]
+      reasons: [
+        err.message
+      ]
     };
   }
 }
 
 // ================= DISCORD =================
 
-async function sendDiscord(message) {
+async function sendDiscord(
+  message
+) {
 
   try {
 
@@ -355,29 +553,40 @@ async function sendDiscord(message) {
   }
 }
 
-// ================= LINKS =================
+// ================= LINK EXTRACTION =================
 
-function extractLinks($, baseUrl) {
+function extractLinks(
+  $,
+  baseUrl
+) {
 
   const found = [];
 
-  $("a").each((_, el) => {
+  $("a").each(
+    (_, el) => {
 
-    let href =
-      $(el).attr("href");
+      const href =
+        $(el).attr("href");
 
-    if (shouldSkip(href)) return;
+      if (
+        shouldSkip(href)
+      ) return;
 
-    try {
+      try {
 
-      const absolute =
-        new URL(href, baseUrl)
-        .toString();
+        const absolute =
+          new URL(
+            href,
+            baseUrl
+          ).toString();
 
-      found.push(absolute);
+        found.push(
+          absolute
+        );
 
-    } catch {}
-  });
+      } catch {}
+    }
+  );
 
   return found;
 }
@@ -390,36 +599,57 @@ async function crawl() {
     "OpenSpider started"
   );
 
-  // initial seeds only if queue empty
-  if (queue.length === 0) {
+  const startTime =
+    Date.now();
 
-  enqueue(
-    "https://news.ycombinator.com"
-  );
+  // ================= SEED URLS =================
 
-  enqueue(
-    "https://reddit.com/r/scams"
-  );
+  if (
+    queue.length === 0
+  ) {
 
-  enqueue(
-    "https://openphish.com"
-  );
+    enqueue(
+      "https://news.ycombinator.com"
+    );
 
-  enqueue(
-    "https://phishtank.org"
-  );
+    enqueue(
+      "https://reddit.com/r/scams"
+    );
 
-  enqueue(
-    "https://ahmia.fi"
-  );
-}
+    enqueue(
+      "https://openphish.com"
+    );
+
+    enqueue(
+      "https://phishtank.org"
+    );
+
+    enqueue(
+      "https://ahmia.fi"
+    );
+  }
 
   let pages = 0;
 
   while (
     queue.length &&
-    pages < CONFIG.MAX_PAGES
+    pages <
+      CONFIG.MAX_PAGES
   ) {
+
+    // runtime protection
+    if (
+      Date.now() -
+        startTime >
+      CONFIG.MAX_RUNTIME_MS
+    ) {
+
+      console.log(
+        "Runtime limit reached"
+      );
+
+      break;
+    }
 
     const current =
       queue.shift();
@@ -429,6 +659,10 @@ async function crawl() {
 
     const depth =
       current.depth;
+
+    queuedUrls.delete(
+      url
+    );
 
     if (
       visited.has(url)
@@ -443,41 +677,84 @@ async function crawl() {
     try {
 
       const response =
-        await axios.get(url, {
-          timeout: 10000,
+        await axios.get(
+          url,
+          {
+            timeout: 10000,
 
-          headers: {
-            "User-Agent":
-              "OpenSpider/3.0"
+            maxRedirects: 5,
+
+            validateStatus:
+              status =>
+                status < 400,
+
+            headers: {
+              "User-Agent":
+                "OpenSpider/4.0 Security Research Bot"
+            }
           }
-        });
+        );
+
+      const contentType =
+        response.headers[
+          "content-type"
+        ];
+
+      if (
+        !isValidHtml(
+          contentType
+        )
+      ) {
+
+        continue;
+      }
 
       const html =
         response.data;
 
       const $ =
-        cheerio.load(html);
+        cheerio.load(
+          html
+        );
 
       const text =
         $("body")
         .text()
-        .slice(0, 10000);
+        .replace(
+          /\s+/g,
+          " "
+        )
+        .slice(
+          0,
+          10000
+        );
 
-      // ================= ANALYSIS =================
+      // ================= LOCAL ANALYSIS =================
 
       const local =
-        localAnalyze(url, text);
+        localAnalyze(
+          url,
+          text
+        );
 
       let result = {
-        risk: local.risk,
-        label: "benign",
-        reasons: local.reasons
+        risk:
+          local.risk,
+
+        label:
+          "benign",
+
+        reasons:
+          local.reasons
       };
 
-      // AI only if suspicious
+      // ================= AI =================
+
       if (
         !isTrusted(url) &&
-        local.risk >= 0.2
+        shouldUseAI(
+          local.risk
+        )
       ) {
 
         result =
@@ -498,7 +775,12 @@ async function crawl() {
           `🌐 Suspicious Website\n\n` +
           `URL: ${url}\n` +
           `Label: ${result.label}\n` +
-          `Risk: ${result.risk}`
+          `Risk: ${result.risk}\n\n` +
+          `Reasons:\n- ${
+            result.reasons.join(
+              "\n- "
+            )
+          }`
         );
       }
 
@@ -522,14 +804,26 @@ async function crawl() {
         );
       }
 
-      // ================= LINKS =================
+      // ================= LINK DISCOVERY =================
 
-      if (depth < CONFIG.MAX_DEPTH) {
+      if (
+        depth <
+        CONFIG.MAX_DEPTH
+      ) {
 
         const links =
-          extractLinks($, url);
+          extractLinks(
+            $,
+            url
+          );
 
-        for (const link of links) {
+        for (
+          const link of
+          links.slice(
+            0,
+            50
+          )
+        ) {
 
           enqueue(
             link,
@@ -563,17 +857,28 @@ async function crawl() {
     }
   }
 
-  // ================= SUMMARY =================
+  // ================= FINAL SUMMARY =================
 
   await sendDiscord(
     `✅ OpenSpider Finished\n\n` +
+
     `Pages Crawled: ${pages}\n` +
+
     `Total Crawled: ${
-      state.stats.totalCrawled
+      state.stats
+      .totalCrawled
     }\n` +
+
     `Total Alerts: ${
-      state.stats.totalAlerts
+      state.stats
+      .totalAlerts
     }\n` +
+
+    `AI Requests: ${
+      state.stats
+      .totalAIRequests
+    }\n` +
+
     `Queue Remaining: ${
       queue.length
     }`
