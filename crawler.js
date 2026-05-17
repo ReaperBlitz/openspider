@@ -393,22 +393,26 @@ async function crawl() {
   // initial seeds only if queue empty
   if (queue.length === 0) {
 
-    enqueue(
-      "https://news.ycombinator.com"
-    );
+  enqueue(
+    "https://news.ycombinator.com"
+  );
 
-    enqueue(
-      "https://reddit.com/r/scams"
-    );
+  enqueue(
+    "https://reddit.com/r/scams"
+  );
 
-    enqueue(
-      "https://openphish.com"
-    );
+  enqueue(
+    "https://openphish.com"
+  );
 
-    enqueue(
-      "https://phishtank.org"
-    );
-  }
+  enqueue(
+    "https://phishtank.org"
+  );
+
+  enqueue(
+    "https://ahmia.fi"
+  );
+}
 
   let pages = 0;
 
