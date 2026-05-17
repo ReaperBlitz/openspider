@@ -1,46 +1,53 @@
 const axios = require("axios");
 const cheerio = require("cheerio");
+const fs = require("fs");
 
 // ================= CONFIG =================
 
 const CONFIG = {
-  OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-  DISCORD_WEBHOOK: process.env.DISCORD_WEBHOOK,
+  OPENROUTER_API_KEY:
+    process.env.OPENROUTER_API_KEY,
+
+  DISCORD_WEBHOOK:
+    process.env.DISCORD_WEBHOOK,
 
   MODEL:
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 
-  MAX_PAGES: 1000,
+  MAX_PAGES: 100,
+
   REQUEST_DELAY: 1500,
+
   MAX_DEPTH: 2,
 
   SUSPICIOUS_THRESHOLD: 0.3,
-  ALERT_THRESHOLD: 0.7,
 
-  REQUEST_TIMEOUT: 10000
+  ALERT_THRESHOLD: 0.7
 };
-
-// ================= STARTING SEEDS =================
-
-const seedUrls = [
-  "https://news.ycombinator.com",
-  "https://reddit.com/r/scams",
-  "https://openphish.com",
-  "https://phishtank.org",
-  "https://urlhaus.abuse.ch"
-];
 
 // ================= STATE =================
 
-const visited = new Set();
+const STATE_PATH = "./data/state.json";
 
-const queue = [];
+let state = {
+  visited: [],
+  queue: [],
+  stats: {
+    totalCrawled: 0,
+    totalAlerts: 0
+  }
+};
 
-let pagesCrawled = 0;
-let suspiciousCount = 0;
-let alertCount = 0;
-let aiCalls = 0;
-let failedPages = 0;
+if (fs.existsSync(STATE_PATH)) {
+
+  state = JSON.parse(
+    fs.readFileSync(STATE_PATH, "utf8")
+  );
+}
+
+const visited = new Set(state.visited);
+
+const queue = state.queue;
 
 // ================= TRUSTED DOMAINS =================
 
@@ -51,7 +58,7 @@ const TRUSTED_DOMAINS = [
   "stackoverflow.com"
 ];
 
-// ================= SUSPICIOUS KEYWORDS =================
+// ================= KEYWORDS =================
 
 const suspiciousKeywords = [
   "login",
@@ -63,9 +70,7 @@ const suspiciousKeywords = [
   "account",
   "support",
   "password",
-  "recovery",
-  "signin",
-  "unlock"
+  "signin"
 ];
 
 // ================= UTIL =================
@@ -74,8 +79,24 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function saveState() {
+
+  const data = {
+    visited: [...visited],
+    queue,
+    stats: state.stats
+  };
+
+  fs.writeFileSync(
+    STATE_PATH,
+    JSON.stringify(data, null, 2)
+  );
+}
+
 function normalizeUrl(url) {
+
   try {
+
     const u = new URL(url);
 
     u.hash = "";
@@ -83,19 +104,27 @@ function normalizeUrl(url) {
     return u.toString();
 
   } catch {
+
     return null;
   }
 }
 
 function getDomain(url) {
+
   try {
-    return new URL(url).hostname.replace("www.", "");
+
+    return new URL(url)
+      .hostname
+      .replace("www.", "");
+
   } catch {
+
     return "";
   }
 }
 
 function isTrusted(url) {
+
   const domain = getDomain(url);
 
   return TRUSTED_DOMAINS.some(d =>
@@ -104,17 +133,17 @@ function isTrusted(url) {
 }
 
 function shouldSkip(url) {
+
   if (!url) return true;
 
   const lower = url.toLowerCase();
 
-  const blockedExtensions = [
+  const blocked = [
     ".png",
     ".jpg",
     ".jpeg",
     ".gif",
     ".svg",
-    ".webp",
     ".pdf",
     ".zip",
     ".rar",
@@ -125,22 +154,25 @@ function shouldSkip(url) {
   if (
     lower.startsWith("mailto:") ||
     lower.startsWith("javascript:") ||
+    lower.startsWith("#") ||
     lower.startsWith("tel:")
   ) {
     return true;
   }
 
-  return blockedExtensions.some(ext =>
+  return blocked.some(ext =>
     lower.endsWith(ext)
   );
 }
 
 function calculatePriority(url) {
+
   const lower = url.toLowerCase();
 
   let score = 0;
 
   for (const keyword of suspiciousKeywords) {
+
     if (lower.includes(keyword)) {
       score += 1;
     }
@@ -150,7 +182,9 @@ function calculatePriority(url) {
 }
 
 function enqueue(url, depth = 0) {
-  const normalized = normalizeUrl(url);
+
+  const normalized =
+    normalizeUrl(url);
 
   if (!normalized) return;
 
@@ -158,7 +192,8 @@ function enqueue(url, depth = 0) {
 
   queue.push({
     url: normalized,
-    priority: calculatePriority(normalized),
+    priority:
+      calculatePriority(normalized),
     depth
   });
 
@@ -171,18 +206,24 @@ function enqueue(url, depth = 0) {
 
 function localAnalyze(url, text) {
 
-  const lowerUrl = url.toLowerCase();
-  const lowerText = text.toLowerCase();
+  const lowerUrl =
+    url.toLowerCase();
+
+  const lowerText =
+    text.toLowerCase();
 
   let risk = 0;
+
   const reasons = [];
 
   for (const keyword of suspiciousKeywords) {
 
     if (lowerUrl.includes(keyword)) {
+
       risk += 0.1;
+
       reasons.push(
-        `suspicious keyword: ${keyword}`
+        `keyword: ${keyword}`
       );
     }
   }
@@ -191,6 +232,7 @@ function localAnalyze(url, text) {
     lowerText.includes("password") &&
     lowerText.includes("email")
   ) {
+
     risk += 0.25;
 
     reasons.push(
@@ -199,34 +241,13 @@ function localAnalyze(url, text) {
   }
 
   if (
-    lowerText.includes("crypto") &&
-    lowerText.includes("wallet")
-  ) {
-    risk += 0.2;
-
-    reasons.push(
-      "crypto wallet targeting"
-    );
-  }
-
-  if (
     lowerText.includes("verify account")
   ) {
+
     risk += 0.2;
 
     reasons.push(
       "account verification language"
-    );
-  }
-
-  if (
-    lowerUrl.includes("g00gle") ||
-    lowerUrl.includes("paypaI")
-  ) {
-    risk += 0.5;
-
-    reasons.push(
-      "possible spoof domain"
     );
   }
 
@@ -236,50 +257,53 @@ function localAnalyze(url, text) {
   };
 }
 
-// ================= AI ANALYSIS =================
+// ================= AI =================
 
 async function analyzeWithAI(url, text) {
 
-  aiCalls++;
-
   try {
 
-    const response = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: CONFIG.MODEL,
+    const response =
+      await axios.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          model: CONFIG.MODEL,
 
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a cybersecurity classifier. " +
-              "Return ONLY valid JSON. " +
-              'Format: {"risk":0-1,"label":"benign|suspicious|phishing|malware","reasons":["reason"]}'
-          },
-          {
-            role: "user",
-            content:
-              `Analyze this website.\n\n` +
-              `URL:\n${url}\n\n` +
-              `CONTENT:\n${text.slice(0, 2500)}`
+          messages: [
+            {
+              role: "system",
+              content:
+                "Return ONLY valid JSON. " +
+                'Format: {"risk":0-1,"label":"benign|suspicious|phishing|malware","reasons":["reason"]}'
+            },
+            {
+              role: "user",
+              content:
+                `Analyze this website.\n\n` +
+                `URL:\n${url}\n\n` +
+                `CONTENT:\n${text.slice(0, 2500)}`
+            }
+          ]
+        },
+        {
+          headers: {
+            Authorization:
+              `Bearer ${CONFIG.OPENROUTER_API_KEY}`,
+
+            "Content-Type":
+              "application/json"
           }
-        ]
-      },
-      {
-        headers: {
-          Authorization:
-            `Bearer ${CONFIG.OPENROUTER_API_KEY}`,
-          "Content-Type":
-            "application/json"
         }
-      }
-    );
+      );
 
     const output =
-      response.data.choices[0].message.content;
+      response.data
+      .choices[0]
+      .message
+      .content;
 
     try {
+
       return JSON.parse(output);
 
     } catch {
@@ -288,7 +312,7 @@ async function analyzeWithAI(url, text) {
         risk: 0,
         label: "parse_error",
         reasons: [
-          "AI returned invalid JSON"
+          "invalid ai json"
         ]
       };
     }
@@ -325,7 +349,7 @@ async function sendDiscord(message) {
   }
 }
 
-// ================= EXTRACT LINKS =================
+// ================= LINKS =================
 
 function extractLinks($, baseUrl) {
 
@@ -333,14 +357,16 @@ function extractLinks($, baseUrl) {
 
   $("a").each((_, el) => {
 
-    let href = $(el).attr("href");
+    let href =
+      $(el).attr("href");
 
     if (shouldSkip(href)) return;
 
     try {
 
       const absolute =
-        new URL(href, baseUrl).toString();
+        new URL(href, baseUrl)
+        .toString();
 
       found.push(absolute);
 
@@ -350,27 +376,53 @@ function extractLinks($, baseUrl) {
   return found;
 }
 
-// ================= MAIN CRAWLER =================
+// ================= MAIN =================
 
 async function crawl() {
 
-  console.log("OpenSpider started");
+  console.log(
+    "OpenSpider started"
+  );
 
-  for (const seed of seedUrls) {
-    enqueue(seed, 0);
+  // initial seeds only if queue empty
+  if (queue.length === 0) {
+
+    enqueue(
+      "https://news.ycombinator.com"
+    );
+
+    enqueue(
+      "https://reddit.com/r/scams"
+    );
+
+    enqueue(
+      "https://openphish.com"
+    );
+
+    enqueue(
+      "https://phishtank.org"
+    );
   }
+
+  let pages = 0;
 
   while (
     queue.length &&
-    pagesCrawled < CONFIG.MAX_PAGES
+    pages < CONFIG.MAX_PAGES
   ) {
 
-    const current = queue.shift();
+    const current =
+      queue.shift();
 
-    const url = current.url;
-    const depth = current.depth;
+    const url =
+      current.url;
 
-    if (visited.has(url)) continue;
+    const depth =
+      current.depth;
+
+    if (
+      visited.has(url)
+    ) continue;
 
     visited.add(url);
 
@@ -380,23 +432,28 @@ async function crawl() {
 
     try {
 
-      const response = await axios.get(url, {
-        timeout: CONFIG.REQUEST_TIMEOUT,
+      const response =
+        await axios.get(url, {
+          timeout: 10000,
 
-        headers: {
-          "User-Agent":
-            "OpenSpider/2.0 Security Research Bot"
-        }
-      });
+          headers: {
+            "User-Agent":
+              "OpenSpider/3.0"
+          }
+        });
 
-      const html = response.data;
+      const html =
+        response.data;
 
-      const $ = cheerio.load(html);
+      const $ =
+        cheerio.load(html);
 
       const text =
-        $("body").text().slice(0, 10000);
+        $("body")
+        .text()
+        .slice(0, 10000);
 
-      // ================= LOCAL ANALYSIS =================
+      // ================= ANALYSIS =================
 
       const local =
         localAnalyze(url, text);
@@ -407,29 +464,25 @@ async function crawl() {
         reasons: local.reasons
       };
 
-      // ================= AI ONLY IF NEEDED =================
-
+      // AI only if suspicious
       if (
         !isTrusted(url) &&
         local.risk >= 0.2
       ) {
 
-        console.log(
-          "AI analysis triggered"
-        );
-
         result =
-          await analyzeWithAI(url, text);
+          await analyzeWithAI(
+            url,
+            text
+          );
       }
 
-      // ================= SUSPICIOUS REPORT =================
+      // ================= DISCORD =================
 
       if (
         result.risk >=
         CONFIG.SUSPICIOUS_THRESHOLD
       ) {
-
-        suspiciousCount++;
 
         await sendDiscord(
           `🌐 Suspicious Website\n\n` +
@@ -439,14 +492,12 @@ async function crawl() {
         );
       }
 
-      // ================= HIGH ALERT =================
-
       if (
         result.risk >=
         CONFIG.ALERT_THRESHOLD
       ) {
 
-        alertCount++;
+        state.stats.totalAlerts++;
 
         await sendDiscord(
           `@here ⚠️ SECURITY ALERT\n\n` +
@@ -454,27 +505,36 @@ async function crawl() {
           `Label: ${result.label}\n` +
           `Risk: ${result.risk}\n\n` +
           `Reasons:\n- ${
-            (result.reasons || [])
-              .join("\n- ")
+            result.reasons.join(
+              "\n- "
+            )
           }`
         );
       }
 
-      // ================= LINK EXTRACTION =================
+      // ================= LINKS =================
 
-      if (
-        depth < CONFIG.MAX_DEPTH
-      ) {
+      if (depth < CONFIG.MAX_DEPTH) {
 
         const links =
           extractLinks($, url);
 
         for (const link of links) {
-          enqueue(link, depth + 1);
+
+          enqueue(
+            link,
+            depth + 1
+          );
         }
       }
 
-      pagesCrawled++;
+      // ================= SAVE =================
+
+      state.stats.totalCrawled++;
+
+      saveState();
+
+      pages++;
 
       await sleep(
         CONFIG.REQUEST_DELAY
@@ -482,30 +542,36 @@ async function crawl() {
 
     } catch (err) {
 
-      failedPages++;
-
       console.log(
         "Failed:",
         url
       );
 
-      console.log(err.message);
+      console.log(
+        err.message
+      );
     }
   }
 
-  // ================= FINAL SUMMARY =================
+  // ================= SUMMARY =================
 
   await sendDiscord(
     `✅ OpenSpider Finished\n\n` +
-    `Pages Crawled: ${pagesCrawled}\n` +
-    `Suspicious Pages: ${suspiciousCount}\n` +
-    `High Alerts: ${alertCount}\n` +
-    `AI Calls: ${aiCalls}\n` +
-    `Failed Pages: ${failedPages}\n` +
-    `Queue Remaining: ${queue.length}`
+    `Pages Crawled: ${pages}\n` +
+    `Total Crawled: ${
+      state.stats.totalCrawled
+    }\n` +
+    `Total Alerts: ${
+      state.stats.totalAlerts
+    }\n` +
+    `Queue Remaining: ${
+      queue.length
+    }`
   );
 
-  console.log("OpenSpider finished");
+  console.log(
+    "OpenSpider finished"
+  );
 }
 
 crawl();
