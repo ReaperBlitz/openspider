@@ -5,12 +5,12 @@ on:
     # Every 6 hours
     - cron: "0 */6 * * *"
 
-  # Manual trigger
   workflow_dispatch:
 
 jobs:
   crawl:
     name: OpenSpider Crawl
+
     runs-on: ubuntu-latest
 
     timeout-minutes: 20
@@ -20,7 +20,7 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      # ================= REPOSITORY =================
+      # ================= CHECKOUT =================
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -31,14 +31,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
-      # ================= DEPENDENCIES =================
+      # ================= INSTALL =================
 
       - name: Install Dependencies
-        run: npm install
+        run: npm install axios cheerio
 
-      # ================= RUN CRAWLER =================
+      # ================= RUN =================
 
       - name: Run OpenSpider
         run: node crawler.js
@@ -46,7 +45,15 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
-      # ================= STATUS =================
+      # ================= SAVE STATE =================
 
-      - name: Workflow Finished
-        run: echo "OpenSpider crawl completed."
+      - name: Commit Updated State
+        run: |
+          git config --global user.name "OpenSpider Bot"
+          git config --global user.email "bot@openspider.local"
+
+          git add data/state.json
+
+          git commit -m "Update OpenSpider state" || echo "No changes"
+
+          git push
