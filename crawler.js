@@ -81,9 +81,15 @@ function sleep(ms) {
 
 function saveState() {
 
+  const limitedVisited =
+    [...visited].slice(-5000);
+
+  const limitedQueue =
+    queue.slice(0, 1000);
+
   const data = {
-    visited: [...visited],
-    queue,
+    visited: limitedVisited,
+    queue: limitedQueue,
     stats: state.stats
   };
 
