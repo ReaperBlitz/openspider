@@ -84,6 +84,9 @@ const queuedUrls =
 
 const domainCounts = {};
 
+const recentAlerts =
+  new Set();
+
 // ================= TRUSTED DOMAINS =================
 
 const TRUSTED_DOMAINS = [
@@ -93,7 +96,27 @@ const TRUSTED_DOMAINS = [
   "stackoverflow.com",
   "mozilla.org",
   "microsoft.com",
-  "google.com"
+  "google.com",
+  "apple.com",
+  "discord.com",
+  "reddit.com",
+  "amazon.com",
+  "facebook.com",
+  "instagram.com",
+  "x.com",
+  "twitter.com"
+];
+
+// ================= SUSPICIOUS TLDS =================
+
+const suspiciousTlds = [
+  ".xyz",
+  ".top",
+  ".click",
+  ".gq",
+  ".tk",
+  ".ru",
+  ".cn"
 ];
 
 // ================= SUSPICIOUS KEYWORDS =================
@@ -196,6 +219,34 @@ function isTrusted(url) {
   );
 }
 
+function isTrustedLoginPage(
+  url,
+  text
+) {
+
+  const domain =
+    getDomain(url);
+
+  if (
+    !isTrusted(url)
+  ) return false;
+
+  const lower =
+    text.toLowerCase();
+
+  const authWords = [
+    "sign in",
+    "login",
+    "password",
+    "2fa",
+    "authenticate"
+  ];
+
+  return authWords.some(
+    w => lower.includes(w)
+  );
+}
+
 function shouldSkip(url) {
 
   if (!url) return true;
@@ -272,7 +323,8 @@ function enqueue(
   const normalized =
     normalizeUrl(url);
 
-  if (!normalized) return;
+  if (!normalized)
+    return;
 
   if (
     visited.has(normalized)
@@ -340,11 +392,76 @@ function isValidHtml(
   );
 }
 
+function analyzeUrlRisk(
+  url
+) {
+
+  const lower =
+    url.toLowerCase();
+
+  let risk = 0;
+
+  const reasons = [];
+
+  // IP URLs
+  if (
+    /https?:\/\/\d+\.\d+\.\d+\.\d+/.test(
+      lower
+    )
+  ) {
+
+    risk += 0.4;
+
+    reasons.push(
+      "ip address url"
+    );
+  }
+
+  // suspicious tlds
+  for (
+    const tld of suspiciousTlds
+  ) {
+
+    if (
+      lower.includes(tld)
+    ) {
+
+      risk += 0.25;
+
+      reasons.push(
+        `suspicious tld ${tld}`
+      );
+    }
+  }
+
+  // many subdomains
+  const parts =
+    getDomain(url)
+    .split(".");
+
+  if (
+    parts.length >= 5
+  ) {
+
+    risk += 0.2;
+
+    reasons.push(
+      "many subdomains"
+    );
+  }
+
+  return {
+    risk,
+    reasons
+  };
+}
+
 // ================= LOCAL ANALYSIS =================
 
 function localAnalyze(
   url,
-  text
+  text,
+  $
 ) {
 
   const lowerUrl =
@@ -357,6 +474,23 @@ function localAnalyze(
 
   const reasons = [];
 
+  // trusted auth bypass
+  if (
+    isTrustedLoginPage(
+      url,
+      text
+    )
+  ) {
+
+    return {
+      risk: 0,
+      reasons: [
+        "trusted auth page"
+      ]
+    };
+  }
+
+  // keyword analysis
   for (
     const keyword of
     suspiciousKeywords
@@ -368,14 +502,15 @@ function localAnalyze(
       )
     ) {
 
-      risk += 0.1;
+      risk += 0.08;
 
       reasons.push(
-        `keyword: ${keyword}`
+        `keyword ${keyword}`
       );
     }
   }
 
+  // credential collection
   if (
     lowerText.includes(
       "password"
@@ -388,10 +523,11 @@ function localAnalyze(
     risk += 0.25;
 
     reasons.push(
-      "possible credential collection"
+      "credential collection"
     );
   }
 
+  // verify account
   if (
     lowerText.includes(
       "verify account"
@@ -401,10 +537,11 @@ function localAnalyze(
     risk += 0.2;
 
     reasons.push(
-      "account verification language"
+      "account verification"
     );
   }
 
+  // crypto scams
   if (
     lowerText.includes(
       "wallet connect"
@@ -414,7 +551,7 @@ function localAnalyze(
     risk += 0.25;
 
     reasons.push(
-      "crypto wallet interaction"
+      "wallet connect"
     );
   }
 
@@ -427,9 +564,97 @@ function localAnalyze(
     risk += 0.5;
 
     reasons.push(
-      "seed phrase mention"
+      "seed phrase"
     );
   }
+
+  // nitro scam
+  if (
+    lowerText.includes(
+      "free nitro"
+    )
+  ) {
+
+    risk += 0.4;
+
+    reasons.push(
+      "discord nitro scam"
+    );
+  }
+
+  // form analysis
+  const forms =
+    $("form");
+
+  if (
+    forms.length >= 1
+  ) {
+
+    risk += 0.1;
+
+    reasons.push(
+      "contains forms"
+    );
+
+    forms.each(
+      (_, form) => {
+
+        const action =
+          $(form)
+          .attr("action");
+
+        if (
+          action &&
+          !action.includes(
+            getDomain(url)
+          )
+        ) {
+
+          risk += 0.2;
+
+          reasons.push(
+            "external form action"
+          );
+        }
+      }
+    );
+  }
+
+  // iframes
+  if (
+    $("iframe").length >= 3
+  ) {
+
+    risk += 0.15;
+
+    reasons.push(
+      "multiple iframes"
+    );
+  }
+
+  // hidden inputs
+  if (
+    $('input[type="hidden"]')
+      .length >= 5
+  ) {
+
+    risk += 0.1;
+
+    reasons.push(
+      "many hidden inputs"
+    );
+  }
+
+  // url risk
+  const urlRisk =
+    analyzeUrlRisk(url);
+
+  risk +=
+    urlRisk.risk;
+
+  reasons.push(
+    ...urlRisk.reasons
+  );
 
   return {
     risk:
@@ -602,7 +827,7 @@ async function crawl() {
   const startTime =
     Date.now();
 
-  // ================= SEED URLS =================
+  // ================= SEEDS =================
 
   if (
     queue.length === 0
@@ -694,7 +919,7 @@ async function crawl() {
 
             headers: {
               "User-Agent":
-                "OpenSpider/4.0 Security Research Bot"
+                "OpenSpider/5.0 Security Research Bot"
             }
           }
         );
@@ -738,7 +963,8 @@ async function crawl() {
       const local =
         localAnalyze(
           url,
-          text
+          text,
+          $
         );
 
       let result = {
@@ -772,11 +998,16 @@ async function crawl() {
 
       if (
         result.risk >=
-        CONFIG.SUSPICIOUS_THRESHOLD
+          CONFIG.SUSPICIOUS_THRESHOLD &&
+        !recentAlerts.has(url)
       ) {
 
+        recentAlerts.add(
+          url
+        );
+
         await sendDiscord(
-          `🌐 Suspicious Website\n\n` +
+          `@here 🌐 Suspicious Website\n\n` +
           `URL: ${url}\n` +
           `Label: ${result.label}\n` +
           `Risk: ${result.risk}\n\n` +
@@ -861,7 +1092,7 @@ async function crawl() {
     }
   }
 
-  // ================= FINAL SUMMARY =================
+  // ================= SUMMARY =================
 
   await sendDiscord(
     `✅ OpenSpider Finished\n\n` +
@@ -883,9 +1114,22 @@ async function crawl() {
       .totalAIRequests
     }\n` +
 
+    `Visited URLs: ${
+      visited.size
+    }\n` +
+
     `Queue Remaining: ${
       queue.length
-    }`
+    }\n` +
+
+    `Runtime: ${
+      Math.floor(
+        (
+          Date.now() -
+          startTime
+        ) / 1000
+      )
+    } seconds`
   );
 
   console.log(
