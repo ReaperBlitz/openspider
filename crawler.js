@@ -627,6 +627,10 @@ async function crawl() {
     enqueue(
       "https://ahmia.fi"
     );
+
+    enqueue(
+      "https://urlhaus.abuse.ch"
+    );
   }
 
   let pages = 0;
