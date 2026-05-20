@@ -277,6 +277,12 @@ function shouldSkip(url) {
     lower.startsWith(
       "javascript:"
     ) ||
+    lower.startsWith(
+      "data:"
+    ) ||
+    lower.startsWith(
+      "vbscript:"
+    ) ||
     lower.startsWith("#") ||
     lower.startsWith("tel:")
   ) {
