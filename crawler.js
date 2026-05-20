@@ -856,6 +856,10 @@ async function crawl() {
     enqueue(
       "https://urlhaus.abuse.ch"
     );
+
+    enqueue(
+      "https://old.reddit.com/"
+    );
   }
 
   let pages = 0;
